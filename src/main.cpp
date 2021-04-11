@@ -14,7 +14,7 @@
 #include "comet.h"
 
 #define MULTICORE
-#define SEM_WAIT_TICKS 5
+#define SEM_WAIT_TICKS 20
 
 #define OLED_CLOCK 15
 #define OLED_DATA 4
@@ -94,7 +94,7 @@ int LED_LOOP_PERIOD = 17; // in milliseconds
 const int MAX_SETTINGS_FILE_SIZE = 1000;
 
 #ifdef MULTICORE
-TaskHandle_t LEDManagement;
+TaskHandle_t MQTTManagement;
 #endif
 
 void haltExecution() {
@@ -444,7 +444,7 @@ void setup() {
                     20000,       /* Stack size of task */
                     NULL,        /* parameter of the task */
                     1,           /* priority of the task */
-                    &LEDManagement,      /* Task handle to keep track of created task */
+                    &MQTTManagement,      /* Task handle to keep track of created task */
                     0);          /* pin task to core 0 */                  
   delay(500);
 }
