@@ -13,6 +13,9 @@
 #include "twinkle.h"
 #include "comet.h"
 
+#define MULTICORE
+#define SEM_WAIT_TICKS 5
+
 #define OLED_CLOCK 15
 #define OLED_DATA 4
 #define OLED_RESET 16
@@ -27,12 +30,13 @@ enum StripEffect {
   RAINBOW, MARQUEE, TWINKLE, COMET
 };
 
-typedef struct StripConfig {
+struct StripConfig {
   bool on; // true if the strip is turned on
   StripEffect currentEffect;
   uint8_t brightness;
 };
-static struct StripConfig stripConf = { true, StripEffect::COMET, 30 };
+static struct StripConfig stripConf = { true, StripEffect::RAINBOW, 15 };
+SemaphoreHandle_t  stripConf_sem; 
 
 // Display
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C g_OLED(U8G2_R2, OLED_RESET, OLED_CLOCK, OLED_DATA);
@@ -89,9 +93,6 @@ int MAIN_LOOP_PERIOD = 2000; // in milliseconds
 int LED_LOOP_PERIOD = 17; // in milliseconds
 const int MAX_SETTINGS_FILE_SIZE = 1000;
 
-static int lastMainLoopTime = 0;
-static int lastLEDLoopTime = 0;
-
 #ifdef MULTICORE
 TaskHandle_t LEDManagement;
 #endif
@@ -124,25 +125,30 @@ int clamp(int value, int min, int max) {
 }
 
 void DrawStripEffect(CRGB* g_LEDs, int numLEDs, int deltaTime) {
-  if (stripConf.on) {
-    switch (stripConf.currentEffect) {
-      case StripEffect::RAINBOW: {
-        DrawRainbow(g_LEDs, numLEDs, deltaTime, Direction::COUNTERCLOCKWISE);
-        break;
-      } 
-      case StripEffect::MARQUEE: {
-        DrawMarquee(g_LEDs, numLEDs, deltaTime);
-        break;
-      }
-      case StripEffect::TWINKLE: {
-        DrawTwinkle(g_LEDs, numLEDs, deltaTime);
-        break;
-      }
-      case StripEffect::COMET: {
-        DrawComet(g_LEDs, numLEDs, deltaTime, 7);
-        break;
+  if (xSemaphoreTake(stripConf_sem, SEM_WAIT_TICKS) == pdTRUE) {
+    if (stripConf.on) {
+      switch (stripConf.currentEffect) {
+        case StripEffect::RAINBOW: {
+          DrawRainbow(g_LEDs, numLEDs, deltaTime, Direction::COUNTERCLOCKWISE);
+          break;
+        } 
+        case StripEffect::MARQUEE: {
+          DrawMarquee(g_LEDs, numLEDs, deltaTime);
+          break;
+        }
+        case StripEffect::TWINKLE: {
+          DrawTwinkle(g_LEDs, numLEDs, deltaTime);
+          break;
+        }
+        case StripEffect::COMET: {
+          DrawComet(g_LEDs, numLEDs, deltaTime, 7);
+          break;
+        }
       }
     }
+    xSemaphoreGive(stripConf_sem);
+  } else {
+    Serial.println("LED LOOP: COULDN'T TAKE SEMAPHORE.");
   }
 }
 
@@ -154,34 +160,39 @@ void UpdateStripStatus() {
 
 void parseNewStatus(DynamicJsonDocument doc) {
   const char* s = doc["status"];
-  if (s){
-    if (strcmp(s, "on") == 0) {
-      stripConf.on = true;
-    } else if (strcmp(s, "off") == 0) {
-      stripConf.on = false;
+  if (xSemaphoreTake(stripConf_sem, SEM_WAIT_TICKS) == pdTRUE) {
+    if (s){
+      if (strcmp(s, "on") == 0) {
+        stripConf.on = true;
+      } else if (strcmp(s, "off") == 0) {
+        stripConf.on = false;
+      }
     }
-  }
 
-  const char* e = doc["effect"];
-  if (e) {
-    if (strcmp(e, "rainbow") == 0) {
-      stripConf.currentEffect = StripEffect::RAINBOW;
-    } else if (strcmp(e, "marquee") == 0) {
-      stripConf.currentEffect = StripEffect::MARQUEE;
-    } else if (strcmp(e, "twinkle") == 0) {
-      stripConf.currentEffect = StripEffect::TWINKLE;
-    } else if (strcmp(e, "comet") == 0) {
-      stripConf.currentEffect = StripEffect::COMET;
+    const char* e = doc["effect"];
+    if (e) {
+      if (strcmp(e, "rainbow") == 0) {
+        stripConf.currentEffect = StripEffect::RAINBOW;
+      } else if (strcmp(e, "marquee") == 0) {
+        stripConf.currentEffect = StripEffect::MARQUEE;
+      } else if (strcmp(e, "twinkle") == 0) {
+        stripConf.currentEffect = StripEffect::TWINKLE;
+      } else if (strcmp(e, "comet") == 0) {
+        stripConf.currentEffect = StripEffect::COMET;
+      }
     }
-  }
 
-  JsonVariant b = doc["brightness"];
-  if (!b.isNull()) {
-    stripConf.brightness = (uint8_t) clamp(b.as<int>(), 0, 255);
-    Serial.printf("\nNew brightness: %d\n", stripConf.brightness);
-  }
+    JsonVariant b = doc["brightness"];
+    if (!b.isNull()) {
+      stripConf.brightness = (uint8_t) clamp(b.as<int>(), 0, 255);
+      Serial.printf("\nNew brightness: %d\n", stripConf.brightness);
+    }
 
-  UpdateStripStatus();
+    UpdateStripStatus();
+    xSemaphoreGive(stripConf_sem);
+  } else {
+    Serial.println("MQTT LOOP: COULDN'T TAKE SEMAPHORE.");
+  }
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -281,35 +292,6 @@ void wifiSetup() {
   g_OLED.sendBuffer();
 }
 
-#ifdef MULTICORE
-void LEDLoop(void* pvParameters) {
-  for (;;) {
-    int now = millis();
-    int ledLoopDeltaTime = now - lastLEDLoopTime;
-
-    // LEDs loop
-    if (ledLoopDeltaTime > LED_LOOP_PERIOD) {
-      DrawStripEffect(g_LEDs, NUM_LEDS, ledLoopDeltaTime);
-      FastLED.show();
-      lastLEDLoopTime = now;
-    }
-  }
-}
-#endif
-
-void initDisplay() {
-  g_OLED.begin();
-  g_OLED.clear();
-  g_OLED.setFont(u8g2_font_profont15_tf);
-
-  g_lineHeight = g_OLED.getAscent() - g_OLED.getDescent();
-
-  g_OLED.setCursor(0, g_lineHeight);
-  g_OLED.print("Welcome!");
-  g_OLED.sendBuffer();
-  delay(1000);
-}
-
 bool parseSettings() {
   if(!SPIFFS.begin(true)){
     Serial.println("An Error has occurred while mounting SPIFFS.");
@@ -368,33 +350,27 @@ bool parseSettings() {
   return true;
 }
 
+void initDisplay() {
+  g_OLED.begin();
+  g_OLED.clear();
+  g_OLED.setFont(u8g2_font_profont15_tf);
 
-void setup() {
-  // put your setup code here, to run once:
+  g_lineHeight = g_OLED.getAscent() - g_OLED.getDescent();
+
+  g_OLED.setCursor(0, g_lineHeight);
+  g_OLED.print("Welcome!");
+  g_OLED.sendBuffer();
+  delay(1000);
+}
+
+#ifdef MULTICORE
+void MQTTSetup() {
   pinMode(LED_BUILTIN, OUTPUT);
-  pinMode(LED_PIN, OUTPUT);
-  Serial.begin(9600);
 
   // Display initialization
   initDisplay();
 
   if (parseSettings()) {
-    // FastLED
-    #ifdef MULTICORE
-    xTaskCreatePinnedToCore(
-                      LEDLoop,   /* Task function. */
-                      "LEDManagement",     /* name of task. */
-                      10000,       /* Stack size of task */
-                      NULL,        /* parameter of the task */
-                      1,           /* priority of the task */
-                      &LEDManagement,      /* Task handle to keep track of created task */
-                      0);          /* pin task to core 0 */                  
-    delay(500);
-    #endif
-    Serial.println("Start LED configuration.");
-    FastLED.addLeds<WS2812B, LED_PIN, GRB>(g_LEDs, NUM_LEDS).setCorrection(TypicalLEDStrip);
-    UpdateStripStatus();
-    
     // WiFi initialization
     wifiSetup();
     delay(1000);
@@ -420,18 +396,63 @@ void setup() {
   }
 }
 
-void loop() {
-  // MQTT
-  if (!mqttClient.connected()) {
-    reconnect();
+void MQTTLoop(void* pvParameters) {
+
+  MQTTSetup();
+  static int lastMainLoopTime = 0;
+
+  for (;;) {
+    // MQTT
+    if (!mqttClient.connected()) {
+      reconnect();
+    }
+    mqttClient.loop();
+
+    int now = millis();
+    int mainLoopDeltaTime = now - lastMainLoopTime;
+    static bool ledStatus = false;
+
+    // main loop
+    if (mainLoopDeltaTime > MAIN_LOOP_PERIOD) {
+      // put your main code here, to run repeatedly:
+      ledStatus = !ledStatus;
+      digitalWrite(LED_BUILTIN, ledStatus);
+      Serial.printf("Hello!");
+      mqttClient.publish(mqtt_status_topic, "hello world");  
+      lastMainLoopTime = now;
+    }
+    vTaskDelay(MAIN_LOOP_PERIOD / (2 * portTICK_PERIOD_MS));
   }
-  mqttClient.loop();
+}
+#endif
 
-  static bool ledStatus = false;
+void setup() {
+  // put your setup code here, to run once:
+  pinMode(LED_PIN, OUTPUT);
+  Serial.begin(9600);
+
+  // FastLED
+  Serial.println("Start LED configuration.");
+  FastLED.addLeds<WS2812B, LED_PIN, GRB>(g_LEDs, NUM_LEDS).setCorrection(TypicalLEDStrip);
+  UpdateStripStatus();
+
+  stripConf_sem = xSemaphoreCreateBinary();
+  xSemaphoreGive(stripConf_sem);
+  xTaskCreatePinnedToCore(
+                    MQTTLoop,   /* Task function. */
+                    "MQTT Connection Management",     /* name of task. */
+                    20000,       /* Stack size of task */
+                    NULL,        /* parameter of the task */
+                    1,           /* priority of the task */
+                    &LEDManagement,      /* Task handle to keep track of created task */
+                    0);          /* pin task to core 0 */                  
+  delay(500);
+}
+
+void loop() {
+  static int lastLEDLoopTime = 0;
+
   int now = millis();
-  int mainLoopDeltaTime = now - lastMainLoopTime;
-
-  #ifndef MULTICORE
   int ledLoopDeltaTime = now - lastLEDLoopTime;
 
   // LEDs loop
@@ -439,16 +460,5 @@ void loop() {
     DrawStripEffect(g_LEDs, NUM_LEDS, ledLoopDeltaTime);
     FastLED.show();
     lastLEDLoopTime = now;
-  }
-  #endif
-
-  // main loop
-  if (mainLoopDeltaTime > MAIN_LOOP_PERIOD) {
-    // put your main code here, to run repeatedly:
-    ledStatus = !ledStatus;
-    digitalWrite(LED_BUILTIN, ledStatus);
-    Serial.printf("Hello!");
-    mqttClient.publish(mqtt_status_topic, "hello world");  
-    lastMainLoopTime = now;
   }
 }
