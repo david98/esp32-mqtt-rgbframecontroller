@@ -1,0 +1,23 @@
+{   
+    "wifi": {
+        "ssid": "Your WiFi SSID",
+        "password": "Your WiFi Password"
+    }, 
+    "mqtt": {
+        "username": "MQTT username",
+        "password": "MQTT password",
+        "brokerAddress": "MQTT Broker IP or domain name",
+        "brokerPort": 8883,
+        "rootCA": "Broker root CA",
+        "clientID": "MQTT Client ID",
+        "owner": "owner",
+        "room": "room",
+        "name": "frame1"
+    },
+    "led": {
+        "loopPeriodMs": 17
+    },
+    "general": {
+        "loopPeriodMs": 2000
+    }
+}
