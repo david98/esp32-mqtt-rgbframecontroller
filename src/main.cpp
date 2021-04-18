@@ -12,6 +12,7 @@
 #include "rainbow.h"
 #include "twinkle.h"
 #include "comet.h"
+#include "helpers.h"
 
 #define MULTICORE
 #define SEM_WAIT_TICKS 20
@@ -27,7 +28,7 @@
 CRGB g_LEDs[NUM_LEDS] = {0}; // Frame buffer for FastLED
 
 enum StripEffect {
-  RAINBOW, MARQUEE, TWINKLE, COMET
+  RAINBOW, MARQUEE, TWINKLE, COMET, FLUIDMARQUEE, FLUIDCOMET
 };
 
 struct StripConfig {
@@ -35,8 +36,9 @@ struct StripConfig {
   StripEffect currentEffect;
   uint8_t brightness;
   uint8_t speed;
+  CRGB color;
 };
-static struct StripConfig stripConf = { true, StripEffect::RAINBOW, 15, 5 };
+static struct StripConfig stripConf = { true, StripEffect::FLUIDCOMET, 15, 1, CRGB::Red };
 SemaphoreHandle_t  stripConf_sem; 
 
 // Display
@@ -145,6 +147,14 @@ void DrawStripEffect(CRGB* g_LEDs, int numLEDs, int deltaTime) {
           DrawComet(g_LEDs, numLEDs, deltaTime, stripConf.speed, 7);
           break;
         }
+        case StripEffect::FLUIDMARQUEE: {
+          DrawFluidMarquee(g_LEDs, numLEDs, deltaTime, stripConf.speed, stripConf.color);
+          break;
+        }
+        case StripEffect::FLUIDCOMET: {
+          DrawFluidComet(g_LEDs, numLEDs, deltaTime, stripConf.speed, 7, stripConf.color);
+          break;
+        }
       }
     }
     xSemaphoreGive(stripConf_sem);
@@ -176,10 +186,14 @@ void parseNewStatus(DynamicJsonDocument doc) {
         stripConf.currentEffect = StripEffect::RAINBOW;
       } else if (strcmp(e, "marquee") == 0) {
         stripConf.currentEffect = StripEffect::MARQUEE;
+      } else if (strcmp(e, "fluidmarquee") == 0) {
+        stripConf.currentEffect = StripEffect::FLUIDMARQUEE;
       } else if (strcmp(e, "twinkle") == 0) {
         stripConf.currentEffect = StripEffect::TWINKLE;
       } else if (strcmp(e, "comet") == 0) {
         stripConf.currentEffect = StripEffect::COMET;
+      } else if (strcmp(e, "fluidcomet") == 0) {
+        stripConf.currentEffect = StripEffect::FLUIDCOMET;
       }
     }
 
@@ -193,7 +207,15 @@ void parseNewStatus(DynamicJsonDocument doc) {
     if (!s.isNull()) {
       stripConf.speed = (uint8_t) clamp(s.as<int>(), 1, 10);
       Serial.printf("\nNew speed: %d\n", stripConf.speed);
-    }
+    } 
+
+      JsonVariant c = doc["color"];
+      if (!s.isNull()) {
+        stripConf.color.setRGB((uint8_t) clamp(c["r"].as<int>(), 0, 255),
+                                (uint8_t) clamp(c["g"].as<int>(), 0, 255),
+                                (uint8_t) clamp(c["b"].as<int>(), 0, 255));
+        Serial.printf("\nNew color: (%d, %d, %d)\n", stripConf.color.r, stripConf.color.g, stripConf.color.b);
+      }
 
     UpdateStripStatus();
     xSemaphoreGive(stripConf_sem);
