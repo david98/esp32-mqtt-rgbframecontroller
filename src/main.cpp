@@ -34,8 +34,9 @@ struct StripConfig {
   bool on; // true if the strip is turned on
   StripEffect currentEffect;
   uint8_t brightness;
+  uint8_t speed;
 };
-static struct StripConfig stripConf = { true, StripEffect::RAINBOW, 15 };
+static struct StripConfig stripConf = { true, StripEffect::RAINBOW, 15, 5 };
 SemaphoreHandle_t  stripConf_sem; 
 
 // Display
@@ -129,19 +130,19 @@ void DrawStripEffect(CRGB* g_LEDs, int numLEDs, int deltaTime) {
     if (stripConf.on) {
       switch (stripConf.currentEffect) {
         case StripEffect::RAINBOW: {
-          DrawRainbow(g_LEDs, numLEDs, deltaTime, Direction::COUNTERCLOCKWISE);
+          DrawRainbow(g_LEDs, numLEDs, deltaTime, stripConf.speed, Direction::COUNTERCLOCKWISE);
           break;
         } 
         case StripEffect::MARQUEE: {
-          DrawMarquee(g_LEDs, numLEDs, deltaTime);
+          DrawMarquee(g_LEDs, numLEDs, deltaTime, stripConf.speed);
           break;
         }
         case StripEffect::TWINKLE: {
-          DrawTwinkle(g_LEDs, numLEDs, deltaTime);
+          DrawTwinkle(g_LEDs, numLEDs, deltaTime, stripConf.speed);
           break;
         }
         case StripEffect::COMET: {
-          DrawComet(g_LEDs, numLEDs, deltaTime, 7);
+          DrawComet(g_LEDs, numLEDs, deltaTime, stripConf.speed, 7);
           break;
         }
       }
@@ -186,6 +187,12 @@ void parseNewStatus(DynamicJsonDocument doc) {
     if (!b.isNull()) {
       stripConf.brightness = (uint8_t) clamp(b.as<int>(), 0, 255);
       Serial.printf("\nNew brightness: %d\n", stripConf.brightness);
+    }
+
+    JsonVariant s = doc["speed"];
+    if (!s.isNull()) {
+      stripConf.speed = (uint8_t) clamp(s.as<int>(), 1, 10);
+      Serial.printf("\nNew speed: %d\n", stripConf.speed);
     }
 
     UpdateStripStatus();

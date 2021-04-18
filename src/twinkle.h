@@ -11,13 +11,15 @@ static const CRGB TwinkleColors[NUM_COLORS] = {
     CRGB::Orange
 };
 
-void DrawTwinkle(CRGB* g_LEDs, int numLEDs, int deltaTime) {
+void DrawTwinkle(CRGB* g_LEDs, int numLEDs, int deltaTime, uint8_t speed) {
     static int passCount = 0;
     static int twinkleDeltaTime = 0;
 
+    const int speeds[10] = {450, 400, 350, 300, 250, 200, 150, 100, 50, 0};
+
     twinkleDeltaTime += deltaTime;
 
-    if (twinkleDeltaTime > 200) {
+    if (twinkleDeltaTime > speeds[speed - 1]) {
         passCount++;
     
         if (passCount >= numLEDs / 4) {

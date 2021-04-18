@@ -2,7 +2,7 @@
 #define FASTLED_INTERNAL
 #include <FastLED.h>
 
-void DrawComet(CRGB* g_LEDs, int numLEDs, int deltaTime, int cometSize) {
+void DrawComet(CRGB* g_LEDs, int numLEDs, int deltaTime, uint8_t speed, int cometSize) {
     const byte fadeAmt = 128;
     const int deltaHue = 4;
 
@@ -10,20 +10,29 @@ void DrawComet(CRGB* g_LEDs, int numLEDs, int deltaTime, int cometSize) {
     static int iDirection = 1; // Current direction (+/- 1)
     static int iPos = 0; // Current comet position on strips
 
-    hue += deltaHue;
-    iPos += iDirection;
-    
-    if (iPos == (numLEDs - cometSize) || iPos == 0) {
-        iDirection *= -1;
-    }
+    static int cometDeltaTime = 0;
+    const int speeds[10] = {54, 48, 42, 36, 30, 24, 18, 12, 6, 0};
 
-    for (int i = 0; i < cometSize; i++) {
-        g_LEDs[iPos + i].setHue(hue);
-    }
+    cometDeltaTime += deltaTime;
 
-    for (int j = 0; j < numLEDs; j++) {
-        if (random(2) == 1) {
-            g_LEDs[j].fadeToBlackBy(fadeAmt);
+    if (cometDeltaTime >= speeds[speed - 1]) {
+        hue += deltaHue;
+        iPos += iDirection;
+        
+        if (iPos == (numLEDs - cometSize) || iPos == 0) {
+            iDirection *= -1;
         }
+
+        for (int i = 0; i < cometSize; i++) {
+            g_LEDs[iPos + i].setHue(hue);
+        }
+
+        for (int j = 0; j < numLEDs; j++) {
+            if (random(2) == 1) {
+                g_LEDs[j].fadeToBlackBy(fadeAmt);
+            }
+        }
+
+        cometDeltaTime = 0;
     }
 }
