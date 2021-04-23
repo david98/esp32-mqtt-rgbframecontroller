@@ -23,7 +23,7 @@
 
 // LED Strip
 #define NUM_LEDS 144
-#define LED_PIN 5
+#define LED_PIN 18
 
 CRGB g_LEDs[NUM_LEDS] = {0}; // Frame buffer for FastLED
 
@@ -38,7 +38,7 @@ struct StripConfig {
   uint8_t speed;
   CRGB color;
 };
-static struct StripConfig stripConf = { true, StripEffect::FLUIDCOMET, 15, 1, CRGB::Red };
+static struct StripConfig stripConf = { true, StripEffect::FLUIDMARQUEE, 255, 1, CRGB::White };
 SemaphoreHandle_t  stripConf_sem; 
 
 // Display

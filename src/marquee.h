@@ -32,12 +32,12 @@ void DrawMarquee(CRGB* g_LEDs, int numLEDs, int deltaTime, uint8_t speed) {
 void DrawFluidMarquee(CRGB* g_LEDs, int numLEDs, int deltaTime, uint8_t speed, CRGB color)
 {
     FastLED.clear(false);
-    static float scroll = 0.0f;
+    static float scroll = -5.0f;
 
     const float speeds[10] = { 0.01, 0.03, 0.05, 0.07, 0.09, 0.1, 0.12, 0.14, 0.16, 0.18 };
 
     scroll += speeds[speed - 1];
-    if (scroll > 5.0)
+    if (scroll > 0.0)
         scroll -= 5.0;
 
     for (float i = scroll; i < numLEDs; i+= 5)

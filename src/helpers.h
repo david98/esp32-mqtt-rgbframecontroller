@@ -18,6 +18,7 @@ CRGB ColorFraction(CRGB colorIn, float fraction)
 
 void DrawPixels(float fPos, float count, CRGB color)
 {
+  fPos = max(fPos, 0.0f);
   // Calculate how much the first pixel will hold
   float availFirstPixel = 1.0f - (fPos - (long)(fPos));
   float amtFirstPixel = min(availFirstPixel, count);
