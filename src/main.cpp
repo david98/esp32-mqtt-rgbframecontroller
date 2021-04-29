@@ -12,6 +12,7 @@
 #include "rainbow.h"
 #include "twinkle.h"
 #include "comet.h"
+#include "static.h"
 #include "helpers.h"
 
 #define MULTICORE
@@ -28,7 +29,7 @@
 CRGB g_LEDs[NUM_LEDS] = {0}; // Frame buffer for FastLED
 
 enum StripEffect {
-  RAINBOW, MARQUEE, TWINKLE, COMET, FLUIDMARQUEE, FLUIDCOMET
+  RAINBOW, MARQUEE, TWINKLE, COMET, FLUIDMARQUEE, FLUIDCOMET, STATIC
 };
 
 struct StripConfig {
@@ -155,6 +156,10 @@ void DrawStripEffect(CRGB* g_LEDs, int numLEDs, int deltaTime) {
           DrawFluidComet(g_LEDs, numLEDs, deltaTime, stripConf.speed, 7, stripConf.color);
           break;
         }
+        case StripEffect::STATIC: {
+          DrawStatic(g_LEDs, numLEDs, deltaTime, stripConf.speed, stripConf.color);
+          break;
+        }
       }
     }
     xSemaphoreGive(stripConf_sem);
@@ -194,6 +199,8 @@ void parseNewStatus(DynamicJsonDocument doc) {
         stripConf.currentEffect = StripEffect::COMET;
       } else if (strcmp(e, "fluidcomet") == 0) {
         stripConf.currentEffect = StripEffect::FLUIDCOMET;
+      } else if (strcmp(e, "static") == 0) {
+        stripConf.currentEffect = StripEffect::STATIC;
       }
     }
 
