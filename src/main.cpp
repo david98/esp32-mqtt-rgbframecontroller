@@ -217,7 +217,7 @@ void parseNewStatus(DynamicJsonDocument doc) {
     } 
 
       JsonVariant c = doc["color"];
-      if (!s.isNull()) {
+      if (!c.isNull()) {
         stripConf.color.setRGB((uint8_t) clamp(c["r"].as<int>(), 0, 255),
                                 (uint8_t) clamp(c["g"].as<int>(), 0, 255),
                                 (uint8_t) clamp(c["b"].as<int>(), 0, 255));
