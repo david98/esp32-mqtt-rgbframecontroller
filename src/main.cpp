@@ -23,6 +23,8 @@
 #define OLED_DATA 4
 #define OLED_RESET 16
 
+#define MAX_STRIP_CONF_JSON_SIZE 2048
+
 // LED Strip
 #define NUM_LEDS 144
 #define LED_PIN 18
@@ -42,6 +44,7 @@ struct StripConfig {
 };
 static struct StripConfig stripConf = { true, StripEffect::FLUIDMARQUEE, 255, 1, CRGB::White };
 SemaphoreHandle_t  stripConf_sem; 
+DynamicJsonDocument currentStripConf(MAX_STRIP_CONF_JSON_SIZE);
 
 // Display
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C g_OLED(U8G2_R2, OLED_RESET, OLED_CLOCK, OLED_DATA);
@@ -177,11 +180,54 @@ void UpdateStripStatus() {
   FastLED.setBrightness(stripConf.brightness);
 }
 
+const char *stripEffectToString(StripEffect e) {
+  if (e == StripEffect::RAINBOW) {
+    return "rainbow";
+  } else if (e == StripEffect::MARQUEE) {
+    return "marquee";
+  } else if (e == StripEffect::COMET) {
+    return "comet";
+  } else if (e == StripEffect::FLUIDCOMET) {
+    return "fluidcomet";
+  } else if (e == StripEffect::FLUIDMARQUEE) {
+    return "fluidmarquee";
+  } else if (e == StripEffect::STATIC) {
+    return "static";
+  } else if (e == StripEffect::TWINKLE) {
+    return "twinkle";
+  } else if (e == StripEffect::RAINBOW) {
+    return "rainbow"; 
+  } else {
+    Serial.println("WARNING: unknown effect.");
+    return "unknown";
+  }
+}
 
-void parseNewStripConf(DynamicJsonDocument doc) {
+void UpdateCurrentStripConfigJSON(boolean dontTakeSemaphore) {
+  if (dontTakeSemaphore || xSemaphoreTake(stripConf_sem, SEM_WAIT_TICKS) == pdTRUE) {
+    currentStripConf["status"] = stripConf.on ? "on" : "off";
+    char brightness[3] = { '\0' };
+    sprintf(brightness, "%d", stripConf.brightness);
+    currentStripConf["brightness"] = brightness;
+    char speed[2] = { '\0' };
+    sprintf(speed, "%d", stripConf.speed);
+    currentStripConf["speed"] = speed;
+    currentStripConf["effect"] = stripEffectToString(stripConf.currentEffect);
+
+    xSemaphoreGive(stripConf_sem);
+  } else {
+    Serial.println("UpdateCurrentStripConfigJSON: couldn't take semaphore.");
+  }
+}
+
+void WriteCurrentStripConf() {
+
+}
+
+void parseNewStripConf(DynamicJsonDocument doc, boolean checkIfNew) {
   if (xSemaphoreTake(stripConf_sem, SEM_WAIT_TICKS) == pdTRUE) {
     const JsonVariant newConf = doc["newConf"];
-    if (!newConf.as<boolean>()) {
+    if (!newConf.as<boolean>() && checkIfNew) {
       Serial.println("This configuration is not new and will not be parsed.");
       xSemaphoreGive(stripConf_sem);
       return;
@@ -234,15 +280,29 @@ void parseNewStripConf(DynamicJsonDocument doc) {
       Serial.printf("\nNew speed: %d\n", stripConf.speed);
     } 
 
-      JsonVariant c = doc["color"];
-      if (!c.isNull()) {
-        stripConf.color.setRGB((uint8_t) clamp(c["r"].as<int>(), 0, 255),
-                                (uint8_t) clamp(c["g"].as<int>(), 0, 255),
-                                (uint8_t) clamp(c["b"].as<int>(), 0, 255));
-        Serial.printf("\nNew color: (%d, %d, %d)\n", stripConf.color.r, stripConf.color.g, stripConf.color.b);
-      }
+    JsonVariant c = doc["color"];
+    if (!c.isNull()) {
+      stripConf.color.setRGB((uint8_t) clamp(c["r"].as<int>(), 0, 255),
+                              (uint8_t) clamp(c["g"].as<int>(), 0, 255),
+                              (uint8_t) clamp(c["b"].as<int>(), 0, 255));
+      Serial.printf("\nNew color: (%d, %d, %d)\n", stripConf.color.r, stripConf.color.g, stripConf.color.b);
+    }
 
     UpdateStripStatus();
+    UpdateCurrentStripConfigJSON(true);
+
+    File file = SPIFFS.open("/stripSettings.json", FILE_WRITE);
+    if(!file){
+      Serial.println("Failed to open strip settings file for writing.");
+    }
+
+    Serial.println("Writing strip config to flash...");
+    char conf[MAX_STRIP_CONF_JSON_SIZE] = { '\0' };
+    serializeJson(currentStripConf, conf);
+    file.print(conf);
+    file.close();
+    Serial.println("Strip config written to flash.");
+      
     xSemaphoreGive(stripConf_sem);
   } else {
     Serial.println("MQTT CALLBACK: COULDN'T TAKE SEMAPHORE.");
@@ -271,7 +331,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 
   if (strcmp(topic, mqtt_strip_topic) == 0) {
-    parseNewStripConf(doc);
+    parseNewStripConf(doc, true);
     Serial.println();
   } else if (strcmp(topic, mqtt_controller_topic) == 0) {
     // parse controller configuration
@@ -391,7 +451,7 @@ void wifiSetup() {
   g_OLED.sendBuffer();
 }
 
-bool parseSettings() {
+bool loadControllerSettings() {
   if(!SPIFFS.begin(true)){
     Serial.println("An Error has occurred while mounting SPIFFS.");
     return false;
@@ -399,11 +459,11 @@ bool parseSettings() {
   
   File file = SPIFFS.open("/settings.json");
   if(!file){
-    Serial.println("Failed to open settings file for reading.");
+    Serial.println("Failed to open controller settings file for reading.");
     return false;
   }
   
-  Serial.println("Settings File Content:");
+  Serial.println("Controller Settings File Content:");
   char settingsContent[MAX_SETTINGS_FILE_SIZE];
   int i = 0;
   while(file.available()){
@@ -417,7 +477,7 @@ bool parseSettings() {
   DeserializationError error = deserializeJson(doc, settingsContent);
 
   if (error) {
-    Serial.print(F("Settings File deserializeJson() failed: "));
+    Serial.print(F("Controller Settings File deserializeJson() failed: "));
     Serial.println(error.f_str());
     file.close();
     return false;
@@ -449,6 +509,46 @@ bool parseSettings() {
   return true;
 }
 
+bool loadStripSettings() {
+  if(!SPIFFS.begin(true)){
+    Serial.println("An Error has occurred while mounting SPIFFS.");
+    return false;
+  }
+  
+  File file = SPIFFS.open("/stripSettings.json");
+  if(!file){
+    Serial.println("Failed to open strip settings file for reading.");
+    return false;
+  }
+  
+  Serial.println("Strip Settings File Content:");
+  char settingsContent[MAX_SETTINGS_FILE_SIZE];
+  int i = 0;
+  while(file.available()){
+    int c = file.read();
+    Serial.write(c);
+    settingsContent[i] = (char)c;
+    i++;
+  }
+  settingsContent[i] = '\0';
+  DynamicJsonDocument doc(i);
+  DeserializationError error = deserializeJson(doc, settingsContent);
+
+  if (error) {
+    Serial.print(F("Strip Settings File deserializeJson() failed: "));
+    Serial.println(error.f_str());
+    file.close();
+    return false;
+  }
+  Serial.print('\n');
+
+  parseNewStripConf(doc, false);
+
+  file.close();
+  Serial.println("Strip settings parsed.");
+  return true;
+}
+
 void initDisplay() {
   g_OLED.begin();
   g_OLED.clear();
@@ -469,7 +569,7 @@ void MQTTSetup() {
   // Display initialization
   initDisplay();
 
-  if (parseSettings()) {
+  if (loadControllerSettings()) {
     // WiFi initialization
     wifiSetup();
     delay(1000);
@@ -495,43 +595,12 @@ void MQTTSetup() {
   }
 }
 
-const char *stripEffectToString(StripEffect e) {
-  if (e == StripEffect::RAINBOW) {
-    return "rainbow";
-  } else if (e == StripEffect::MARQUEE) {
-    return "marquee";
-  } else if (e == StripEffect::COMET) {
-    return "comet";
-  } else if (e == StripEffect::FLUIDCOMET) {
-    return "fluidcomet";
-  } else if (e == StripEffect::FLUIDMARQUEE) {
-    return "fluidmarquee";
-  } else if (e == StripEffect::STATIC) {
-    return "static";
-  } else if (e == StripEffect::TWINKLE) {
-    return "twinkle";
-  } else {
-    Serial.println("WARNING: unknown effect.");
-    return "unknown";
-  }
-}
-
 void PublishStripStatus() {
-  char message[2048];
-  DynamicJsonDocument currentConf(2048);
-  currentConf["status"] = stripConf.on ? "on" : "off";
-  char brightness[3] = { '\0' };
-  sprintf(brightness, "%d", stripConf.brightness);
-  currentConf["brightness"] = brightness;
-  char speed[2] = { '\0' };
-  sprintf(speed, "%d", stripConf.speed);
-  currentConf["speed"] = speed;
-  currentConf["effect"] = stripEffectToString(stripConf.currentEffect);
-
-  serializeJsonPretty(currentConf, Serial);
+  char message[MAX_STRIP_CONF_JSON_SIZE];
+  serializeJsonPretty(currentStripConf, Serial);
   Serial.print("\n");
 
-  serializeJson(currentConf, message);
+  serializeJson(currentStripConf, message);
 
   Serial.print("Publishing strip status: ");
   Serial.println(message);
@@ -593,10 +662,18 @@ void setup() {
   // FastLED
   Serial.println("Start LED configuration.");
   FastLED.addLeds<WS2812B, LED_PIN, GRB>(g_LEDs, NUM_LEDS).setCorrection(TypicalLEDStrip);
-  UpdateStripStatus();
 
   stripConf_sem = xSemaphoreCreateBinary();
   xSemaphoreGive(stripConf_sem);
+
+  // loadStripSettings();
+
+  UpdateStripStatus();
+  while(currentStripConf == NULL) {
+    UpdateCurrentStripConfigJSON(false);
+  }
+
+
   xTaskCreatePinnedToCore(
                     MQTTLoop,   /* Task function. */
                     "MQTT Connection Management",     /* name of task. */
