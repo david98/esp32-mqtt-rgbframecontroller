@@ -2,6 +2,7 @@
 #include <U8g2lib.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <WiFiClient.h>
 #include <PubSubClient.h>
 #include <string.h>
 #include <ArduinoJson.h>
@@ -49,6 +50,7 @@ int g_lineHeight = 0;
 // WiFi
 char SSID[50];           
 char WIFI_PASSWORD[50]; 
+const int MAX_WIFI_CONNECTION_RETRIES = 50;
 
 // MQTT
 char MQTT_USERNAME[50];
@@ -86,10 +88,12 @@ char MQTT_CLIENT_ID[50];
 char OWNER[50];
 char ROOM[50];
 char NAME [50];
-char mqtt_status_topic[200] = "\0";
-char mqtt_command_topic[200] = "\0";
+char mqtt_strip_topic[200] = "\0";
+char mqtt_controller_topic[200] = "\0";
 const int MAX_PAYLOAD_SIZE = 500;
-WiFiClientSecure espClient;
+const int MAX_MQTT_CONNECTION_RETRIES = 5;
+WiFiClientSecure espClientSecure;
+WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 
 // General
@@ -174,13 +178,22 @@ void UpdateStripStatus() {
 }
 
 
-void parseNewStatus(DynamicJsonDocument doc) {
-  const char* s = doc["status"];
+void parseNewStripConf(DynamicJsonDocument doc) {
   if (xSemaphoreTake(stripConf_sem, SEM_WAIT_TICKS) == pdTRUE) {
-    if (s){
-      if (strcmp(s, "on") == 0) {
+    const JsonVariant newConf = doc["newConf"];
+    if (!newConf.as<boolean>()) {
+      Serial.println("This configuration is not new and will not be parsed.");
+      xSemaphoreGive(stripConf_sem);
+      return;
+    }
+
+    const char *lines[6] = { "\0" };
+
+    const char* status = doc["status"];
+    if (status){
+      if (strcmp(status, "on") == 0) {
         stripConf.on = true;
-      } else if (strcmp(s, "off") == 0) {
+      } else if (strcmp(status, "off") == 0) {
         stripConf.on = false;
       }
     }
@@ -203,6 +216,11 @@ void parseNewStatus(DynamicJsonDocument doc) {
         stripConf.currentEffect = StripEffect::STATIC;
       }
     }
+
+    lines[0] = "Strip conf received.";
+    lines[1] = status;
+    lines[2] = e;
+    displayPrint(lines, 3);
 
     JsonVariant b = doc["brightness"];
     if (!b.isNull()) {
@@ -227,14 +245,11 @@ void parseNewStatus(DynamicJsonDocument doc) {
     UpdateStripStatus();
     xSemaphoreGive(stripConf_sem);
   } else {
-    Serial.println("MQTT LOOP: COULDN'T TAKE SEMAPHORE.");
+    Serial.println("MQTT CALLBACK: COULDN'T TAKE SEMAPHORE.");
   }
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  const char *lines[6] = { "\0" };
-  lines[0] = "Command received.";
-
   Serial.print("Message received [");
   Serial.print(topic);
   Serial.print("]\n");
@@ -255,16 +270,23 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  lines[1] = doc["status"];
-  lines[2] = doc["effect"];
-  displayPrint(lines, 3);
-  parseNewStatus(doc);
-  Serial.println();
+  if (strcmp(topic, mqtt_strip_topic) == 0) {
+    parseNewStripConf(doc);
+    Serial.println();
+  } else if (strcmp(topic, mqtt_controller_topic) == 0) {
+    // parse controller configuration
+  } else {
+    Serial.print("Received message on unrecognised topic: ");
+    Serial.println(topic);
+  }
+
+  
 }
 
 
 void reconnect() {
   const char *lines[6] = { "\0" };
+  int retryCounter = 0;
   // Loop until we're reconnected
   while (!mqttClient.connected()) {
     lines[0] = "Connecting to";
@@ -282,9 +304,16 @@ void reconnect() {
 
       Serial.println("connected");
       // Once connected, publish an announcement...
-      mqttClient.publish(mqtt_status_topic, "hello world");
+      mqttClient.publish(mqtt_strip_topic, "Connected!");
       // ... and resubscribe
-      mqttClient.subscribe(mqtt_command_topic);
+      boolean subscribeSuccess = mqttClient.subscribe(mqtt_controller_topic);
+      if (!subscribeSuccess) {
+        Serial.println("Error while subscribing to controller topic!");
+      }
+      subscribeSuccess = mqttClient.subscribe(mqtt_strip_topic);
+      if (!subscribeSuccess) {
+        Serial.println("Error while subscribing to strip topic!");
+      }
     } else {
       lines[0] = "MQTT connection";
       lines[1] = "failed.";
@@ -294,29 +323,63 @@ void reconnect() {
       lines[3] = "Retrying...";
       displayPrint(lines, 4);
 
+      retryCounter++;
+      if (retryCounter >= MAX_MQTT_CONNECTION_RETRIES) {
+        ESP.restart();
+      }
       // Wait 5 seconds before retrying
       delay(5000);
     }
   }
 }
 
+void scanNetworks() {
+  // scan for nearby networks:
+  Serial.println("** Scan Networks **");
+  byte numSsid = WiFi.scanNetworks();
+
+  // print the list of networks seen:
+  Serial.print("SSID List:");
+  Serial.println(numSsid);
+  // print the network number and name for each network found:
+  for (int thisNet = 0; thisNet<numSsid; thisNet++) {
+    Serial.print(thisNet);
+    Serial.print(") Network: ");
+    Serial.println(WiFi.SSID(thisNet));
+  }
+}
+
 void wifiSetup() {
   const char* lines[4] = { "\0" };
+
   lines[0] = "Connecting to";
   lines[1] = "WiFi network:";
   lines[2] = SSID;
   displayPrint(lines, 3);
+
+  WiFi.disconnect();
   delay(1000);
+
+  scanNetworks();
 
   WiFi.begin(SSID, WIFI_PASSWORD);
 
   int i = 0;
-  while (WiFi.status() != WL_CONNECTED) {
+  while (WiFi.status() != WL_CONNECTED && WiFi.status() != WL_IDLE_STATUS && WiFi.localIP().toString() == "0.0.0.0") {
     delay(500);
+    Serial.printf("Status: %d\n", WiFi.status());
+    Serial.println("Trying to connect to WiFi network...");
     g_OLED.setCursor(i, g_lineHeight * 4);
     g_OLED.printf(".");
     i += 1;
+
+    if (i >= MAX_WIFI_CONNECTION_RETRIES) {
+      ESP.restart();
+    }
   }
+
+  Serial.print("Connected. IP Address: ");
+  Serial.println(WiFi.localIP().toString());
 
   g_OLED.clear();
   g_OLED.setCursor(0, g_lineHeight);
@@ -411,14 +474,14 @@ void MQTTSetup() {
     wifiSetup();
     delay(1000);
 
-    espClient.setCACert(ROOT_CA);
-    //espClient.setInsecure(); // this shouldn't be needed
+    espClientSecure.setCACert(ROOT_CA);
+    espClientSecure.setInsecure(); // this shouldn't be needed
     mqttClient.setServer(MQTT_BROKER_ADDRESS, MQTT_BROKER_PORT);
     mqttClient.setCallback(mqttCallback);
-    sprintf(mqtt_status_topic, "%s/%s/%s/status", OWNER, ROOM, NAME);
-    sprintf(mqtt_command_topic, "%s/%s/%s/command", OWNER, ROOM, NAME);
-    Serial.printf("MQTT Status Topic: %s\n", mqtt_status_topic);
-    Serial.printf("MQTT Command Topic: %s\n", mqtt_command_topic);
+    sprintf(mqtt_strip_topic, "%s/%s/%s/strip", OWNER, ROOM, NAME);
+    sprintf(mqtt_controller_topic, "%s/%s/%s/controller", OWNER, ROOM, NAME);
+    Serial.printf("MQTT Strip Topic: %s\n", mqtt_strip_topic);
+    Serial.printf("MQTT Controller Topic: %s\n", mqtt_controller_topic);
 
     Serial.printf("Started!");
     delay(1000);
@@ -432,6 +495,56 @@ void MQTTSetup() {
   }
 }
 
+const char *stripEffectToString(StripEffect e) {
+  if (e == StripEffect::RAINBOW) {
+    return "rainbow";
+  } else if (e == StripEffect::MARQUEE) {
+    return "marquee";
+  } else if (e == StripEffect::COMET) {
+    return "comet";
+  } else if (e == StripEffect::FLUIDCOMET) {
+    return "fluidcomet";
+  } else if (e == StripEffect::FLUIDMARQUEE) {
+    return "fluidmarquee";
+  } else if (e == StripEffect::STATIC) {
+    return "static";
+  } else if (e == StripEffect::TWINKLE) {
+    return "twinkle";
+  } else {
+    Serial.println("WARNING: unknown effect.");
+    return "unknown";
+  }
+}
+
+void PublishStripStatus() {
+  char message[2048];
+  DynamicJsonDocument currentConf(2048);
+  currentConf["status"] = stripConf.on ? "on" : "off";
+  char brightness[3] = { '\0' };
+  sprintf(brightness, "%d", stripConf.brightness);
+  currentConf["brightness"] = brightness;
+  char speed[2] = { '\0' };
+  sprintf(speed, "%d", stripConf.speed);
+  currentConf["speed"] = speed;
+  currentConf["effect"] = stripEffectToString(stripConf.currentEffect);
+
+  serializeJsonPretty(currentConf, Serial);
+  Serial.print("\n");
+
+  serializeJson(currentConf, message);
+
+  Serial.print("Publishing strip status: ");
+  Serial.println(message);
+  int length = strlen(message);
+  boolean success = mqttClient.publish(mqtt_strip_topic, message, length);
+
+  if (!success) {
+    Serial.println("Error while publishing strip status.");
+  } else {
+    Serial.println("Publish success!");
+  }
+}
+
 void MQTTLoop(void* pvParameters) {
 
   MQTTSetup();
@@ -442,7 +555,6 @@ void MQTTLoop(void* pvParameters) {
     if (!mqttClient.connected()) {
       reconnect();
     }
-    mqttClient.loop();
 
     int now = millis();
     int mainLoopDeltaTime = now - lastMainLoopTime;
@@ -453,11 +565,22 @@ void MQTTLoop(void* pvParameters) {
       // put your main code here, to run repeatedly:
       ledStatus = !ledStatus;
       digitalWrite(LED_BUILTIN, ledStatus);
-      Serial.printf("Hello!");
-      mqttClient.publish(mqtt_status_topic, "hello world");  
+      Serial.println("Hearbeat");
+
+      PublishStripStatus();
+    }
+
+    boolean success = mqttClient.loop();
+    delay(100);
+    if (!success) {
+      Serial.println("Error while executing MQTT client loop.");
+    }
+
+    if (mainLoopDeltaTime > MAIN_LOOP_PERIOD) {
       lastMainLoopTime = now;
     }
-    vTaskDelay(MAIN_LOOP_PERIOD / (2 * portTICK_PERIOD_MS));
+
+    // vTaskDelay(MAIN_LOOP_PERIOD / (2 * portTICK_PERIOD_MS));
   }
 }
 #endif
@@ -477,7 +600,7 @@ void setup() {
   xTaskCreatePinnedToCore(
                     MQTTLoop,   /* Task function. */
                     "MQTT Connection Management",     /* name of task. */
-                    20000,       /* Stack size of task */
+                    50000,       /* Stack size of task */
                     NULL,        /* parameter of the task */
                     1,           /* priority of the task */
                     &MQTTManagement,      /* Task handle to keep track of created task */
