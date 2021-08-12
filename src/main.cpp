@@ -44,7 +44,7 @@ struct StripConfig {
 };
 static struct StripConfig stripConf = { true, StripEffect::FLUIDMARQUEE, 255, 1, CRGB::White };
 SemaphoreHandle_t  stripConf_sem; 
-DynamicJsonDocument currentStripConf(MAX_STRIP_CONF_JSON_SIZE);
+StaticJsonDocument<MAX_STRIP_CONF_JSON_SIZE> currentStripConf;
 
 // Display
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C g_OLED(U8G2_R2, OLED_RESET, OLED_CLOCK, OLED_DATA);
@@ -102,7 +102,7 @@ PubSubClient mqttClient(espClient);
 // General
 int MAIN_LOOP_PERIOD = 2000; // in milliseconds
 int LED_LOOP_PERIOD = 17; // in milliseconds
-const int MAX_SETTINGS_FILE_SIZE = 1000;
+const int MAX_CONTROLLER_SETTINGS_JSON_SIZE = 1000;
 
 #ifdef MULTICORE
 TaskHandle_t MQTTManagement;
@@ -211,6 +211,14 @@ void UpdateCurrentStripConfigJSON(boolean dontTakeSemaphore) {
     sprintf(speed, "%d", stripConf.speed);
     currentStripConf["speed"] = speed;
     currentStripConf["effect"] = stripEffectToString(stripConf.currentEffect);
+
+    if (currentStripConf["color"].isNull()) {
+      currentStripConf.createNestedObject("color");
+    }
+    currentStripConf["color"]["r"] = stripConf.color.r;
+    currentStripConf["color"]["g"] = stripConf.color.g;
+    currentStripConf["color"]["b"] = stripConf.color.b;
+
 
     xSemaphoreGive(stripConf_sem);
   } else {
@@ -463,7 +471,7 @@ bool loadControllerSettings() {
   }
   
   Serial.println("Controller Settings File Content:");
-  char settingsContent[MAX_SETTINGS_FILE_SIZE];
+  char settingsContent[MAX_CONTROLLER_SETTINGS_JSON_SIZE];
   int i = 0;
   while(file.available()){
     int c = file.read();
@@ -472,7 +480,7 @@ bool loadControllerSettings() {
     i++;
   }
   settingsContent[i] = '\0';
-  DynamicJsonDocument doc(i);
+  StaticJsonDocument<MAX_CONTROLLER_SETTINGS_JSON_SIZE> doc;
   DeserializationError error = deserializeJson(doc, settingsContent);
 
   if (error) {
@@ -521,7 +529,7 @@ bool loadStripSettings() {
   }
   
   Serial.println("Strip Settings File Content:");
-  char settingsContent[MAX_SETTINGS_FILE_SIZE];
+  char settingsContent[MAX_STRIP_CONF_JSON_SIZE];
   int i = 0;
   while(file.available()){
     int c = file.read();
@@ -533,7 +541,7 @@ bool loadStripSettings() {
   Serial.print('\n');
 
   Serial.println("Start deserialization of strip settings file.");
-  DynamicJsonDocument doc(i);
+  StaticJsonDocument<MAX_STRIP_CONF_JSON_SIZE> doc;
   DeserializationError error = deserializeJson(doc, settingsContent);
 
   if (error) {
