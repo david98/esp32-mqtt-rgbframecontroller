@@ -195,8 +195,6 @@ const char *stripEffectToString(StripEffect e) {
     return "static";
   } else if (e == StripEffect::TWINKLE) {
     return "twinkle";
-  } else if (e == StripEffect::RAINBOW) {
-    return "rainbow"; 
   } else {
     Serial.println("WARNING: unknown effect.");
     return "unknown";
@@ -228,13 +226,16 @@ void parseNewStripConf(DynamicJsonDocument doc, boolean checkIfNew) {
   if (xSemaphoreTake(stripConf_sem, SEM_WAIT_TICKS) == pdTRUE) {
     const JsonVariant newConf = doc["newConf"];
     if (!newConf.as<boolean>() && checkIfNew) {
-      Serial.println("This configuration is not new and will not be parsed.");
+      Serial.println("\nThis configuration is not new and will not be parsed.");
       xSemaphoreGive(stripConf_sem);
       return;
     }
 
-    const char *lines[6] = { "\0" };
+    Serial.println("\nNew configuration. Parsing.");
+    serializeJsonPretty(doc, Serial);
+    Serial.print('\n');
 
+    Serial.println("\nParsing status.");
     const char* status = doc["status"];
     if (status){
       if (strcmp(status, "on") == 0) {
@@ -263,11 +264,6 @@ void parseNewStripConf(DynamicJsonDocument doc, boolean checkIfNew) {
       }
     }
 
-    lines[0] = "Strip conf received.";
-    lines[1] = status;
-    lines[2] = e;
-    displayPrint(lines, 3);
-
     JsonVariant b = doc["brightness"];
     if (!b.isNull()) {
       stripConf.brightness = (uint8_t) clamp(b.as<int>(), 0, 255);
@@ -287,6 +283,9 @@ void parseNewStripConf(DynamicJsonDocument doc, boolean checkIfNew) {
                               (uint8_t) clamp(c["b"].as<int>(), 0, 255));
       Serial.printf("\nNew color: (%d, %d, %d)\n", stripConf.color.r, stripConf.color.g, stripConf.color.b);
     }
+
+
+    Serial.println("Strip configuration updated.");
 
     UpdateStripStatus();
     UpdateCurrentStripConfigJSON(true);
@@ -531,6 +530,9 @@ bool loadStripSettings() {
     i++;
   }
   settingsContent[i] = '\0';
+  Serial.print('\n');
+
+  Serial.println("Start deserialization of strip settings file.");
   DynamicJsonDocument doc(i);
   DeserializationError error = deserializeJson(doc, settingsContent);
 
@@ -540,6 +542,8 @@ bool loadStripSettings() {
     file.close();
     return false;
   }
+  Serial.println("Strip settings file deserialized.");
+  serializeJsonPretty(doc, Serial);
   Serial.print('\n');
 
   parseNewStripConf(doc, false);
@@ -666,7 +670,7 @@ void setup() {
   stripConf_sem = xSemaphoreCreateBinary();
   xSemaphoreGive(stripConf_sem);
 
-  // loadStripSettings();
+  loadStripSettings();
 
   UpdateStripStatus();
   while(currentStripConf == NULL) {
