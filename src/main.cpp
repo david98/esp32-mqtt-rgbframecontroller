@@ -531,7 +531,7 @@ bool loadStripSettings() {
   Serial.println("Strip Settings File Content:");
   char settingsContent[MAX_STRIP_CONF_JSON_SIZE];
   int i = 0;
-  while(file.available()){
+  while(file.available() && i < MAX_STRIP_CONF_JSON_SIZE){
     int c = file.read();
     Serial.write(c);
     settingsContent[i] = (char)c;
@@ -548,6 +548,13 @@ bool loadStripSettings() {
     Serial.print(F("Strip Settings File deserializeJson() failed: "));
     Serial.println(error.f_str());
     file.close();
+
+    Serial.println("Wiping Strip Settings file...");
+    file = SPIFFS.open("/stripSettings.json", FILE_WRITE);
+    file.print("");
+    file.close();
+    Serial.println("Strip Settings file wiped...");
+
     return false;
   }
   Serial.println("Strip settings file deserialized.");
