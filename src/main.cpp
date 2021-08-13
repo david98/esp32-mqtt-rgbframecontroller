@@ -3,11 +3,13 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <WiFiClient.h>
+#include <HTTPClient.h>
 #include <PubSubClient.h>
 #include <string.h>
 #include <ArduinoJson.h>
 #include <FastLED.h>
 #include "SPIFFS.h"
+#include <Update.h>
 
 #include "marquee.h"
 #include "rainbow.h"
@@ -24,6 +26,7 @@
 #define OLED_RESET 16
 
 #define MAX_STRIP_CONF_JSON_SIZE 2048
+#define MAX_FIRMWARE_SIZE 1000000
 
 // LED Strip
 #define NUM_LEDS 144
@@ -98,6 +101,11 @@ const int MAX_MQTT_CONNECTION_RETRIES = 5;
 WiFiClientSecure espClientSecure;
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
+
+// HTTP
+HTTPClient httpClient;
+const int UPDATE_SERVER_HTTP_PORT = 8000;
+const char *UPDATE_PATH = "/update";
 
 // General
 int MAIN_LOOP_PERIOD = 2000; // in milliseconds
@@ -581,6 +589,78 @@ void initDisplay() {
   delay(1000);
 }
 
+void UpdateFirmware() {
+  Serial.println("Check for firmware update.");
+  const char *lines[] = { "Checking for", "firmware update..." };
+  displayPrint(lines, 2);
+  File file = SPIFFS.open("/firmware.bin", FILE_WRITE);
+  char URL[100];
+  char portString[6];
+  sprintf(portString, ":%d", UPDATE_SERVER_HTTP_PORT);
+
+  strcpy(URL, "http://");
+  strcat(URL, MQTT_BROKER_ADDRESS);
+  strcat(URL, portString);
+  strcat(URL, UPDATE_PATH);
+  if (!httpClient.begin(URL)) {
+    Serial.printf("Error while requesting firmware at %s\n", URL);
+    file.close();
+    return;
+  }
+  const char *lines2[] = { "Downloading new", "firmware..." };
+  displayPrint(lines2, 2);
+
+  int httpCode = httpClient.GET(); //Make the request
+  int reportedSize = 0;
+  int writtenSize = 0;
+
+  if (httpCode == HTTP_CODE_OK) { //Check for the returning code
+      reportedSize = httpClient.getSize();
+      writtenSize = httpClient.writeToStream(&file);
+  } 
+
+  if (writtenSize < 0 || writtenSize != reportedSize) {
+    const char *lines3[] = { "Download error.", "Aborting..." };
+    displayPrint(lines3, 2);
+    Serial.println("Error while downloading new firmware. Aborting.");
+    file.close();
+    return;
+  }
+  
+  file.close();
+  Serial.printf("Firmware download complete. Size: %d\n", reportedSize);
+  const char *lines4[] = { "Firmware download", "success.", "Begin update..." };
+  displayPrint(lines4, 3);
+  httpClient.end(); //Free the resources  
+
+  Serial.println("Begin firmware update.");
+
+  if (!Update.begin(reportedSize)) { //start with max available size
+    Update.printError(Serial);
+    return;
+  }
+
+  file = SPIFFS.open("/firmware.bin", FILE_READ);
+
+  if (Update.writeStream(file) != reportedSize) {
+    Update.printError(Serial);
+    file.close();
+    return;
+  }
+
+  if (Update.end(true)) { //true to set the size to the current progress
+    const char *lines5[] = { "Firmware update", "success.", "Rebooting..." };
+    displayPrint(lines5, 3);
+    Serial.printf("Firmware update success. \nRebooting...\n");
+    ESP.restart();
+  } else {
+    const char *lines6[] = { "Firmware update", "failed.", "Aborting..." };
+    displayPrint(lines6, 3);
+    Update.printError(Serial);
+  }
+
+}
+
 #ifdef MULTICORE
 void MQTTSetup() {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -592,6 +672,8 @@ void MQTTSetup() {
     // WiFi initialization
     wifiSetup();
     delay(1000);
+
+    UpdateFirmware();
 
     espClientSecure.setCACert(ROOT_CA);
     espClientSecure.setInsecure(); // this shouldn't be needed
