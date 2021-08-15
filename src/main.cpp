@@ -106,11 +106,14 @@ PubSubClient mqttClient(espClient);
 HTTPClient httpClient;
 const int UPDATE_SERVER_HTTP_PORT = 8000;
 const char *UPDATE_PATH = "/update";
+const char *VERSION_PATH = "/version";
 
 // General
 int MAIN_LOOP_PERIOD = 2000; // in milliseconds
 int LED_LOOP_PERIOD = 17; // in milliseconds
 const int MAX_CONTROLLER_SETTINGS_JSON_SIZE = 1000;
+const int MAJOR_FW_VERSION = 0;
+const int MINOR_FW_VERSION = 1;
 
 #ifdef MULTICORE
 TaskHandle_t MQTTManagement;
@@ -590,10 +593,11 @@ void initDisplay() {
 }
 
 void UpdateFirmware() {
+  httpClient.setTimeout(INT16_MAX);
   Serial.println("Check for firmware update.");
   const char *lines[] = { "Checking for", "firmware update..." };
   displayPrint(lines, 2);
-  File file = SPIFFS.open("/firmware.bin", FILE_WRITE);
+
   char URL[100];
   char portString[6];
   sprintf(portString, ":%d", UPDATE_SERVER_HTTP_PORT);
@@ -601,23 +605,64 @@ void UpdateFirmware() {
   strcpy(URL, "http://");
   strcat(URL, MQTT_BROKER_ADDRESS);
   strcat(URL, portString);
+  strcat(URL, VERSION_PATH);
+  Serial.printf("Firmware version check URL: %s\n", URL);
+
+  Serial.println("Requesting latest firmware version.");
+  if (!httpClient.begin(URL)) {
+    Serial.printf("Error while checking for new firmware version at %s\n", URL);
+    return;
+  }
+
+  int httpCode = httpClient.GET(); //Make the request
+
+  if (httpCode != HTTP_CODE_OK) { //Check for the returning code
+    Serial.printf("HTTP Status is not 200: %d\n", httpCode);
+    return;
+  }
+
+  String remoteVersion = httpClient.getString();
+  httpClient.end();
+  Serial.print("Remote Version: ");
+  Serial.println(remoteVersion);
+  char buf[10];
+  int minor = 0;
+  int major = 0;
+  remoteVersion.toCharArray(buf, 10);
+  sscanf(buf, "%d.%d", &major, &minor);
+  Serial.printf("Major version: %d, minor version: %d\n", major, minor);
+
+  Serial.println("Received latest firmware version.");
+
+  if ((major * 100 + minor) <= (MAJOR_FW_VERSION * 100 + MINOR_FW_VERSION)) {
+    Serial.println("The system is already on the latest firmware.");
+    return;
+  }
+
+  strcpy(URL, "http://");
+  strcat(URL, MQTT_BROKER_ADDRESS);
+  strcat(URL, portString);
   strcat(URL, UPDATE_PATH);
   if (!httpClient.begin(URL)) {
     Serial.printf("Error while requesting firmware at %s\n", URL);
-    file.close();
     return;
   }
   const char *lines2[] = { "Downloading new", "firmware..." };
   displayPrint(lines2, 2);
 
-  int httpCode = httpClient.GET(); //Make the request
+  httpCode = httpClient.GET(); //Make the request
   int reportedSize = 0;
   int writtenSize = 0;
+  File file = SPIFFS.open("/firmware.bin", FILE_WRITE);
 
   if (httpCode == HTTP_CODE_OK) { //Check for the returning code
-      reportedSize = httpClient.getSize();
-      writtenSize = httpClient.writeToStream(&file);
-  } 
+    reportedSize = httpClient.getSize();
+    writtenSize = httpClient.writeToStream(&file);
+  } else {
+    Serial.printf("HTTP Status is not 200: %d\n", httpCode);
+    file.close();
+    return;
+  }
 
   if (writtenSize < 0 || writtenSize != reportedSize) {
     const char *lines3[] = { "Download error.", "Aborting..." };
@@ -658,7 +703,6 @@ void UpdateFirmware() {
     displayPrint(lines6, 3);
     Update.printError(Serial);
   }
-
 }
 
 #ifdef MULTICORE
