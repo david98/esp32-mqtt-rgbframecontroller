@@ -10,6 +10,7 @@
 #include <FastLED.h>
 #include "SPIFFS.h"
 #include <Update.h>
+#include "BluetoothSerial.h"
 
 #include "marquee.h"
 #include "rainbow.h"
@@ -108,9 +109,13 @@ const int UPDATE_SERVER_HTTP_PORT = 8000;
 const char *UPDATE_PATH = "/update";
 const char *VERSION_PATH = "/version";
 
+// Bluetooth
+BluetoothSerial ESP_BT;
+
 // General
 int MAIN_LOOP_PERIOD = 2000; // in milliseconds
 int LED_LOOP_PERIOD = 17; // in milliseconds
+boolean configuration_mode = false;
 const int MAX_CONTROLLER_SETTINGS_JSON_SIZE = 1000;
 const int MAJOR_FW_VERSION = 0;
 const int MINOR_FW_VERSION = 1;
@@ -469,6 +474,25 @@ void wifiSetup() {
   g_OLED.sendBuffer();
 }
 
+bool parseControllerSettings(DynamicJsonDocument doc) {
+  // TODO: handle missing keys
+  strcpy(SSID, doc["wifi"]["ssid"]);
+  strcpy(WIFI_PASSWORD, doc["wifi"]["password"]);
+  strcpy(MQTT_USERNAME, doc["mqtt"]["username"]);
+  strcpy(MQTT_PASSWORD, doc["mqtt"]["password"]);
+  strcpy(MQTT_BROKER_ADDRESS, doc["mqtt"]["brokerAddress"]);
+  MQTT_BROKER_PORT = doc["mqtt"]["brokerPort"].as<int>();
+  strcpy(MQTT_CLIENT_ID, doc["mqtt"]["clientID"]);
+  strcpy(OWNER, doc["mqtt"]["owner"]);
+  strcpy(ROOM, doc["mqtt"]["room"]);
+  strcpy(NAME, doc["mqtt"]["name"]);
+
+  MAIN_LOOP_PERIOD = doc["general"]["loopPeriodMs"].as<int>();
+  LED_LOOP_PERIOD = doc["led"]["loopPeriodMs"].as<int>();
+
+  return true;
+}
+
 bool loadControllerSettings() {
   if(!SPIFFS.begin(true)){
     Serial.println("An Error has occurred while mounting SPIFFS.");
@@ -502,21 +526,8 @@ bool loadControllerSettings() {
   }
   Serial.print('\n');
 
-  // TODO: handle missing keys
-  strcpy(SSID, doc["wifi"]["ssid"]);
-  strcpy(WIFI_PASSWORD, doc["wifi"]["password"]);
-  strcpy(MQTT_USERNAME, doc["mqtt"]["username"]);
-  strcpy(MQTT_PASSWORD, doc["mqtt"]["password"]);
-  strcpy(MQTT_BROKER_ADDRESS, doc["mqtt"]["brokerAddress"]);
-  MQTT_BROKER_PORT = doc["mqtt"]["brokerPort"].as<int>();
-  strcpy(MQTT_CLIENT_ID, doc["mqtt"]["clientID"]);
-  strcpy(OWNER, doc["mqtt"]["owner"]);
-  strcpy(ROOM, doc["mqtt"]["room"]);
-  strcpy(NAME, doc["mqtt"]["name"]);
-
-  MAIN_LOOP_PERIOD = doc["general"]["loopPeriodMs"].as<int>();
-  LED_LOOP_PERIOD = doc["led"]["loopPeriodMs"].as<int>();
-
+  parseControllerSettings(doc);
+  
   Serial.print("SSID: ");
   Serial.println(SSID);
   Serial.print("Password: ");
@@ -731,12 +742,11 @@ void MQTTSetup() {
     Serial.printf("Started!");
     delay(1000);
   } else {
-    const char* lines[3] = { "\0" };
-    lines[0] = "Error while";
-    lines[1] = "parsing";
-    lines[2] = "settings.json!";
+    Serial.println("Configuration mode.");
+    const char *lines[] = {"Configuration mode.", "BT Name:", "ESP32_RGBFrame"};
     displayPrint(lines, 3);
-    haltExecution();
+    ESP_BT.begin("ESP32_RGBFrame");
+    configuration_mode = true;
   }
 }
 
@@ -765,36 +775,62 @@ void MQTTLoop(void* pvParameters) {
   static int lastMainLoopTime = 0;
 
   for (;;) {
-    // MQTT
-    if (!mqttClient.connected()) {
-      reconnect();
+
+    if (!configuration_mode) {
+      // MQTT
+      if (!mqttClient.connected()) {
+        reconnect();
+      }
+
+      int now = millis();
+      int mainLoopDeltaTime = now - lastMainLoopTime;
+      static bool ledStatus = false;
+
+      // main loop
+      if (mainLoopDeltaTime > MAIN_LOOP_PERIOD) {
+        // put your main code here, to run repeatedly:
+        ledStatus = !ledStatus;
+        digitalWrite(LED_BUILTIN, ledStatus);
+        Serial.println("Hearbeat");
+
+        PublishStripStatus();
+      }
+
+      boolean success = mqttClient.loop();
+      delay(100);
+      if (!success) {
+        Serial.println("Error while executing MQTT client loop.");
+      }
+
+      if (mainLoopDeltaTime > MAIN_LOOP_PERIOD) {
+        lastMainLoopTime = now;
+      }
+    } else {
+      if (ESP_BT.available()) {
+        String received = ESP_BT.readString();
+        Serial.print("BT Received: ");
+        Serial.println(received);
+
+        StaticJsonDocument<MAX_CONTROLLER_SETTINGS_JSON_SIZE> doc;
+        DeserializationError error = deserializeJson(doc, received);
+
+        if (error) {
+          Serial.print(F("Controller Settings File deserializeJson() failed: "));
+          Serial.println(error.f_str());
+        } else {
+          if (parseControllerSettings(doc)) {
+            if (!SPIFFS.begin(true)) {
+              Serial.println("Error while initializing SPIFFS.");
+            }
+            File file = SPIFFS.open("/settings.json", FILE_WRITE);
+            file.print(received);
+            file.close();
+            ESP.restart();
+          }
+        }
+      }
     }
-
-    int now = millis();
-    int mainLoopDeltaTime = now - lastMainLoopTime;
-    static bool ledStatus = false;
-
-    // main loop
-    if (mainLoopDeltaTime > MAIN_LOOP_PERIOD) {
-      // put your main code here, to run repeatedly:
-      ledStatus = !ledStatus;
-      digitalWrite(LED_BUILTIN, ledStatus);
-      Serial.println("Hearbeat");
-
-      PublishStripStatus();
-    }
-
-    boolean success = mqttClient.loop();
-    delay(100);
-    if (!success) {
-      Serial.println("Error while executing MQTT client loop.");
-    }
-
-    if (mainLoopDeltaTime > MAIN_LOOP_PERIOD) {
-      lastMainLoopTime = now;
-    }
-
-    // vTaskDelay(MAIN_LOOP_PERIOD / (2 * portTICK_PERIOD_MS));
+    vTaskDelay(MAIN_LOOP_PERIOD / (2 * portTICK_PERIOD_MS));
   }
 }
 #endif
