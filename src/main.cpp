@@ -826,6 +826,8 @@ void MQTTLoop(void* pvParameters) {
             file.print(received);
             file.close();
             ESP.restart();
+          } else {
+            Serial.println("Wrong settings file received.");
           }
         }
       }
