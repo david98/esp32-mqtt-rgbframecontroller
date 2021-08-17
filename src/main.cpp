@@ -27,7 +27,7 @@
 #define OLED_RESET 16
 
 #define MAX_STRIP_CONF_JSON_SIZE 2048
-#define MAX_FIRMWARE_SIZE 1000000
+#define MAX_FIRMWARE_SIZE 2000000
 
 // LED Strip
 #define NUM_LEDS 144
@@ -116,9 +116,10 @@ BluetoothSerial ESP_BT;
 int MAIN_LOOP_PERIOD = 2000; // in milliseconds
 int LED_LOOP_PERIOD = 17; // in milliseconds
 boolean configuration_mode = false;
-const int MAX_CONTROLLER_SETTINGS_JSON_SIZE = 1000;
+const int MAX_CONTROLLER_SETTINGS_JSON_SIZE = 2048;
 const int MAJOR_FW_VERSION = 0;
-const int MINOR_FW_VERSION = 1;
+const int MINOR_FW_VERSION = 2;
+StaticJsonDocument<MAX_CONTROLLER_SETTINGS_JSON_SIZE> currentControllerSettings;
 
 #ifdef MULTICORE
 TaskHandle_t MQTTManagement;
@@ -242,10 +243,6 @@ void UpdateCurrentStripConfigJSON(boolean dontTakeSemaphore) {
   }
 }
 
-void WriteCurrentStripConf() {
-
-}
-
 void parseNewStripConf(DynamicJsonDocument doc, boolean checkIfNew) {
   if (xSemaphoreTake(stripConf_sem, SEM_WAIT_TICKS) == pdTRUE) {
     const JsonVariant newConf = doc["newConf"];
@@ -332,6 +329,98 @@ void parseNewStripConf(DynamicJsonDocument doc, boolean checkIfNew) {
   }
 }
 
+void UpdateControllerSettingsJSON() {
+  if (currentControllerSettings["wifi"].isNull()) {
+    currentControllerSettings.createNestedObject("wifi");
+  }
+  currentControllerSettings["wifi"]["ssid"] = SSID;
+
+  if (currentControllerSettings["mqtt"].isNull()) {
+    currentControllerSettings.createNestedObject("mqtt");
+  }
+  currentControllerSettings["mqtt"]["username"] = MQTT_USERNAME;
+  currentControllerSettings["mqtt"]["brokerAddress"] = MQTT_BROKER_ADDRESS;
+  currentControllerSettings["mqtt"]["brokerPort"] = MQTT_BROKER_PORT;
+  currentControllerSettings["mqtt"]["clientID"] = MQTT_CLIENT_ID;
+  currentControllerSettings["mqtt"]["owner"] = OWNER;
+  currentControllerSettings["mqtt"]["room"] = ROOM;
+  currentControllerSettings["mqtt"]["name"] = NAME;
+
+  if (currentControllerSettings["led"].isNull()) {
+    currentControllerSettings.createNestedObject("led");
+  }
+  currentControllerSettings["led"]["loopPeriodMs"] = LED_LOOP_PERIOD;
+  
+  if (currentControllerSettings["general"].isNull()) {
+    currentControllerSettings.createNestedObject("general");
+  }
+  currentControllerSettings["general"]["loopPeriodMs"] = MAIN_LOOP_PERIOD;
+}
+
+bool parseControllerSettings(DynamicJsonDocument doc, boolean checkIfNew) {
+  const JsonVariant newConf = doc["newConf"];
+  if (!newConf.as<boolean>() && checkIfNew) {
+    Serial.println("\nThis controller configuration is not new and will not be parsed.");
+    xSemaphoreGive(stripConf_sem);
+    return false;
+  }
+  Serial.println("Parsing new controller settings.");
+
+  if (!doc["wifi"].isNull()) {
+    if (!doc["wifi"]["ssid"].isNull()) {
+      strcpy(SSID, doc["wifi"]["ssid"]);
+    }
+    if (!doc["wifi"]["password"].isNull()) {
+      strcpy(WIFI_PASSWORD, doc["wifi"]["password"]);
+    }
+  }
+  if (!doc["mqtt"].isNull()) {
+    if (!doc["mqtt"]["username"].isNull()) {
+      strcpy(MQTT_USERNAME, doc["mqtt"]["username"]);
+    }
+    if (!doc["mqtt"]["password"].isNull()) {
+      strcpy(MQTT_PASSWORD, doc["mqtt"]["password"]);
+    }
+    if (!doc["mqtt"]["brokerAddress"].isNull()) {
+      strcpy(MQTT_BROKER_ADDRESS, doc["mqtt"]["brokerAddress"]);
+    }
+    if (!doc["mqtt"]["brokerPort"].isNull()) {
+      MQTT_BROKER_PORT = doc["mqtt"]["brokerPort"].as<int>();
+    }
+    if (!doc["mqtt"]["clientID"].isNull()) {
+      strcpy(MQTT_CLIENT_ID, doc["mqtt"]["clientID"]);
+    }
+    if (!doc["mqtt"]["owner"].isNull()) {
+      strcpy(OWNER, doc["mqtt"]["owner"]);
+    }
+    if (!doc["mqtt"]["room"].isNull()) {
+      strcpy(ROOM, doc["mqtt"]["room"]);
+    }
+    if (!doc["mqtt"]["name"].isNull()) {
+      strcpy(NAME, doc["mqtt"]["name"]);
+    }
+  }
+
+  if (!doc["general"].isNull()) {
+    if (!doc["general"]["loopPeriodMs"].isNull()) {
+      MAIN_LOOP_PERIOD = doc["general"]["loopPeriodMs"].as<int>();
+    }
+  }
+  
+  if (!doc["led"].isNull()) {
+    if (!doc["led"]["loopPeriodMs"].isNull()) {
+      LED_LOOP_PERIOD = doc["led"]["loopPeriodMs"].as<int>();
+    }
+  }
+
+  UpdateControllerSettingsJSON();
+  Serial.print("Parsed new controller settings: ");
+  serializeJsonPretty(currentControllerSettings, Serial);
+  Serial.print("\n");
+
+  return true;
+}
+
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   Serial.print("Message received [");
   Serial.print(topic);
@@ -357,7 +446,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     parseNewStripConf(doc, true);
     Serial.println();
   } else if (strcmp(topic, mqtt_controller_topic) == 0) {
-    // parse controller configuration
+    parseControllerSettings(doc, true);
   } else {
     Serial.print("Received message on unrecognised topic: ");
     Serial.println(topic);
@@ -474,25 +563,6 @@ void wifiSetup() {
   g_OLED.sendBuffer();
 }
 
-bool parseControllerSettings(DynamicJsonDocument doc) {
-  // TODO: handle missing keys
-  strcpy(SSID, doc["wifi"]["ssid"]);
-  strcpy(WIFI_PASSWORD, doc["wifi"]["password"]);
-  strcpy(MQTT_USERNAME, doc["mqtt"]["username"]);
-  strcpy(MQTT_PASSWORD, doc["mqtt"]["password"]);
-  strcpy(MQTT_BROKER_ADDRESS, doc["mqtt"]["brokerAddress"]);
-  MQTT_BROKER_PORT = doc["mqtt"]["brokerPort"].as<int>();
-  strcpy(MQTT_CLIENT_ID, doc["mqtt"]["clientID"]);
-  strcpy(OWNER, doc["mqtt"]["owner"]);
-  strcpy(ROOM, doc["mqtt"]["room"]);
-  strcpy(NAME, doc["mqtt"]["name"]);
-
-  MAIN_LOOP_PERIOD = doc["general"]["loopPeriodMs"].as<int>();
-  LED_LOOP_PERIOD = doc["led"]["loopPeriodMs"].as<int>();
-
-  return true;
-}
-
 bool loadControllerSettings() {
   if(!SPIFFS.begin(true)){
     Serial.println("An Error has occurred while mounting SPIFFS.");
@@ -526,7 +596,7 @@ bool loadControllerSettings() {
   }
   Serial.print('\n');
 
-  parseControllerSettings(doc);
+  parseControllerSettings(doc, false);
   
   Serial.print("SSID: ");
   Serial.println(SSID);
@@ -734,6 +804,7 @@ void MQTTSetup() {
     espClientSecure.setInsecure(); // this shouldn't be needed
     mqttClient.setServer(MQTT_BROKER_ADDRESS, MQTT_BROKER_PORT);
     mqttClient.setCallback(mqttCallback);
+    mqttClient.setBufferSize(1024);
     sprintf(mqtt_strip_topic, "%s/%s/%s/strip", OWNER, ROOM, NAME);
     sprintf(mqtt_controller_topic, "%s/%s/%s/controller", OWNER, ROOM, NAME);
     Serial.printf("MQTT Strip Topic: %s\n", mqtt_strip_topic);
@@ -747,6 +818,26 @@ void MQTTSetup() {
     displayPrint(lines, 3);
     ESP_BT.begin("ESP32_RGBFrame");
     configuration_mode = true;
+  }
+}
+
+void PublishControllerSettings() {
+  char message[MAX_CONTROLLER_SETTINGS_JSON_SIZE];
+  serializeJsonPretty(currentControllerSettings, Serial);
+  Serial.print("\n");
+
+  serializeJson(currentControllerSettings, message);
+
+  Serial.print("Publishing controller settings: ");
+  Serial.println(message);
+
+  int length = strlen(message);
+  boolean success = mqttClient.publish(mqtt_controller_topic, message, length);
+
+  if (!success) {
+    Serial.println("Error while publishing controller settings.");
+  } else {
+    Serial.println("Controller settings publish success!");
   }
 }
 
@@ -765,7 +856,7 @@ void PublishStripStatus() {
   if (!success) {
     Serial.println("Error while publishing strip status.");
   } else {
-    Serial.println("Publish success!");
+    Serial.println("Strip status publish success!");
   }
 }
 
@@ -794,10 +885,10 @@ void MQTTLoop(void* pvParameters) {
         Serial.println("Hearbeat");
 
         PublishStripStatus();
+        PublishControllerSettings();
       }
 
       boolean success = mqttClient.loop();
-      delay(100);
       if (!success) {
         Serial.println("Error while executing MQTT client loop.");
       }
@@ -818,7 +909,7 @@ void MQTTLoop(void* pvParameters) {
           Serial.print(F("Controller Settings File deserializeJson() failed: "));
           Serial.println(error.f_str());
         } else {
-          if (parseControllerSettings(doc)) {
+          if (parseControllerSettings(doc, false)) {
             if (!SPIFFS.begin(true)) {
               Serial.println("Error while initializing SPIFFS.");
             }
@@ -832,7 +923,7 @@ void MQTTLoop(void* pvParameters) {
         }
       }
     }
-    vTaskDelay(MAIN_LOOP_PERIOD / (2 * portTICK_PERIOD_MS));
+    vTaskDelay(MAIN_LOOP_PERIOD / (10 * portTICK_PERIOD_MS));
   }
 }
 #endif
